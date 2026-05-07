@@ -1,0 +1,28 @@
+# 1. CORE DEEP LEARNING (Pytorch hệ sinh thái)
+# Lưu ý: Nếu bạn có GPU, hãy cài PyTorch qua trang chủ pytorch.org để lấy đúng bản CUDA.
+# Lệnh dưới đây là bản chuẩn chung.
+torch>=2.1.0
+torchvision>=0.16.0
+
+# 2. XỬ LÝ ẢNH Y TẾ & AUGMENTATION
+# Albumentations chạy trên C++ ở dưới nền, xử lý ảnh y tế (xoay, cắt, chỉnh tương phản) nhanh gấp 3 lần torchvision cơ bản.
+albumentations>=1.3.1
+# Dùng bản headless để tránh lỗi thiếu thư viện giao diện (GUI) nếu bạn đem code lên chạy trên server Linux/Cloud.
+opencv-python-headless>=4.8.0
+
+# 3. TOÁN HỌC & XỬ LÝ DỮ LIỆU
+numpy>=1.24.0
+pandas>=2.1.0
+
+# 4. ĐÁNH GIÁ CHỈ SỐ (Metrics)
+# Dùng để tính Macro-F1, ROC-AUC, Sensitivity, Specificity - những chỉ số sống còn của bài báo y tế.
+scikit-learn>=1.3.0
+
+# 5. VẼ BIỂU ĐỒ & MINH CHỨNG (Visualizations)
+# Cực kỳ quan trọng để vẽ Heatmap ma trận Fuzzy (cij) chứng minh cái "Uncertainty Modeling" cho Reviewer xem.
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# 6. TIỆN ÍCH (Utilities)
+# Hiển thị thanh tiến trình khi train vòng lặp (giúp bạn không bị hoang mang xem code có đang chạy hay treo).
+tqdm>=4.66.0
