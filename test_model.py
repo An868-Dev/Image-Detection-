@@ -9,20 +9,21 @@ import seaborn as sns
 from tqdm import tqdm
 
 # Import từ các module của bạn
-from data.dataset import MedicalImageDataset, get_transforms
+from data.dataset import load_records_kits, MedicalImageDataset, get_transforms
 from utils.model import SuperHybridModel
 from utils.engine import MarginLoss
 
 
-def test_model(model_path, test_dir, batch_size=32, img_size=224):
+def validate_model(model_path, data_root=".", batch_size=32, img_size=224, split_type="val"):
     """
-    Hàm test model trên tập test dataset
+    Hàm validation model trên tập val hoặc train của KiTS19 dataset
     
     Args:
         model_path: đường dẫn đến file .pth
-        test_dir: đường dẫn tới thư mục test dataset
+        data_root: đường dẫn tới thư mục cha của 'dataset'
         batch_size: kích thước batch
         img_size: kích thước ảnh đầu vào
+        split_type: "train" hoặc "val"
     """
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,16 +32,29 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     # ==========================================
     # 1. CHUẨN BỊ DỮ LIỆU
     # ==========================================
-    print(f"\n📦 Chuẩn bị dữ liệu test từ: {test_dir}")
-    _, _, test_transform = get_transforms(img_size)
-    test_dataset = MedicalImageDataset(test_dir, transform=test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    print(f"\n📦 Chuẩn bị dữ liệu từ dataset folder...")
+    _, val_transform = get_transforms(img_size)
     
-    NUM_CLASSES = len(test_dataset.classes)
-    class_names = test_dataset.classes
+    # Load records từ folder dataset (giống như train)
+    dataset_path = os.path.join(data_root, "dataset")
+    records = load_records_kits(dataset_path, split_type=split_type)
+    
+    if not records:
+        print(f"❌ Lỗi: Không tìm thấy records cho split: {split_type}")
+        print(f"   Kiểm tra lại đường dẫn: {dataset_path}")
+        return None
+    
+    val_dataset = MedicalImageDataset(records=records, transform=val_transform)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    
+    # Lấy thông tin về labels (từ records)
+    labels_set = set([r["label"] for r in records])
+    NUM_CLASSES = max(labels_set) + 1 if labels_set else 2
+    
+    print(f"✅ Đã load {len(records)} records từ split '{split_type}'")
     print(f"📊 Số lượng classes: {NUM_CLASSES}")
-    print(f"📋 Tên classes: {class_names}")
-    print(f"📈 Số lượng samples test: {len(test_dataset)}")
+    print(f"   Labels: {sorted(labels_set)}")
+    print(f"📈 Số lượng samples: {len(val_dataset)}")
     
     # ==========================================
     # 2. TẢI MODEL
@@ -48,17 +62,17 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     print(f"\n🔄 Tải model từ: {model_path}")
     if not os.path.exists(model_path):
         print(f"❌ Lỗi: File {model_path} không tồn tại!")
-        return
+        return None
     
-    model = SuperHybridModel(num_classes=NUM_CLASSES, img_size=img_size).to(device)
+    model = SuperHybridModel(in_channels=3, num_classes=NUM_CLASSES, img_size=img_size).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     print("✅ Tải model thành công!")
     
     # ==========================================
-    # 3. CHẠY TEST
+    # 3. CHẠY VALIDATION
     # ==========================================
-    print(f"\n🧪 Bắt đầu kiểm tra trên tập test...")
+    print(f"\n🧪 Bắt đầu kiểm tra trên tập {split_type}...")
     
     all_preds = []
     all_labels = []
@@ -68,7 +82,7 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     running_loss = 0.0
     
     with torch.no_grad():
-        pbar = tqdm(test_loader, desc="Testing")
+        pbar = tqdm(val_loader, desc=f"Validating ({split_type})")
         for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
             
@@ -92,13 +106,13 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     # 4. TÍNH TOÁN METRICS
     # ==========================================
     print(f"\n{'='*60}")
-    print(f"{'KẾT QUẢ ĐÁNH GIÁ - TEST RESULTS':^60}")
+    print(f"{'KẾT QUẢ ĐÁNH GIÁ - VALIDATION RESULTS':^60}")
     print(f"{'='*60}\n")
     
-    avg_loss = running_loss / len(test_loader)
+    avg_loss = running_loss / len(val_loader)
     accuracy = accuracy_score(all_labels, all_preds)
-    f1_macro = f1_score(all_labels, all_preds, average='macro')
-    f1_weighted = f1_score(all_labels, all_preds, average='weighted')
+    f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+    f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
     
@@ -115,7 +129,9 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     print(f"\n{'─'*60}")
     print("📋 CLASSIFICATION REPORT:")
     print(f"{'─'*60}\n")
-    print(classification_report(all_labels, all_preds, target_names=class_names, digits=4))
+    
+    class_names = [f"Label {i}" for i in sorted(labels_set)]
+    print(classification_report(all_labels, all_preds, target_names=class_names, digits=4, zero_division=0))
     
     # ==========================================
     # 6. CONFUSION MATRIX
@@ -134,13 +150,13 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                 xticklabels=class_names, yticklabels=class_names,
                 cbar_kws={'label': 'Count'})
-    plt.title('Confusion Matrix - Test Set', fontsize=16, fontweight='bold')
+    plt.title(f'Confusion Matrix - {split_type.upper()} Set', fontsize=16, fontweight='bold')
     plt.ylabel('True Label', fontsize=12)
     plt.xlabel('Predicted Label', fontsize=12)
     plt.tight_layout()
-    plt.savefig('confusion_matrix.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'confusion_matrix_{split_type}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print("✅ Đã lưu: confusion_matrix.png")
+    print(f"✅ Đã lưu: confusion_matrix_{split_type}.png")
     
     # ==========================================
     # 8. VẼ CONFIDENCE DISTRIBUTION
@@ -150,112 +166,79 @@ def test_model(model_path, test_dir, batch_size=32, img_size=224):
     max_probs = np.max(all_probs, axis=1)
     
     plt.figure(figsize=(10, 5))
-    plt.hist(max_probs, bins=50, alpha=0.7, edgecolor='black')
+    plt.hist(max_probs, bins=50, alpha=0.7, edgecolor='black', color='skyblue')
     plt.xlabel('Confidence (Max Probability)', fontsize=12)
     plt.ylabel('Number of Samples', fontsize=12)
-    plt.title('Distribution of Model Confidence on Test Set', fontsize=14, fontweight='bold')
+    plt.title(f'Distribution of Model Confidence on {split_type.upper()} Set', fontsize=14, fontweight='bold')
     plt.axvline(np.mean(max_probs), color='red', linestyle='--', label=f'Mean: {np.mean(max_probs):.4f}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('confidence_distribution.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'confidence_distribution_{split_type}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print("✅ Đã lưu: confidence_distribution.png")
+    print(f"✅ Đã lưu: confidence_distribution_{split_type}.png")
     
     # ==========================================
-    # 9. TÓMLẠO KẾT QUẢ
+    # 9. TÓM TẮT KẾT QUẢ
     # ==========================================
     results = {
         'model_path': model_path,
+        'split_type': split_type,
         'accuracy': accuracy,
         'f1_macro': f1_macro,
         'f1_weighted': f1_weighted,
         'precision': precision,
         'recall': recall,
         'loss': avg_loss,
-        'num_test_samples': len(test_dataset),
+        'num_samples': len(val_dataset),
         'num_classes': NUM_CLASSES,
         'class_names': class_names
     }
     
     print(f"\n{'='*60}")
-    print(f"✨ TEST HÀN ✨")
+    print(f"✨ VALIDATION HOÀN THÀNH ✨")
     print(f"{'='*60}")
     print(f"\n📁 Model Path: {model_path}")
-    print(f"✅ Số lượng test samples: {len(test_dataset)}")
-    print(f"🎯 Độ chính xác cuối cùng: {accuracy*100:.2f}%\n")
+    print(f"📂 Split: {split_type.upper()}")
+    print(f"✅ Số lượng samples: {len(val_dataset)}")
+    print(f"🎯 Độ chính xác: {accuracy*100:.2f}%")
+    print(f"📈 F1-Score (Macro): {f1_macro:.4f}\n")
     
     return results
-
-
-def test_single_image(model_path, image_path, img_size=224, num_classes=2):
-    """
-    Test model trên một ảnh đơn lẻ
-    
-    Args:
-        model_path: đường dẫn đến file .pth
-        image_path: đường dẫn đến ảnh cần test
-        img_size: kích thước ảnh đầu vào
-        num_classes: số lượng classes
-    """
-    from PIL import Image
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 Sử dụng device: {device}")
-    
-    # Load model
-    print(f"\n🔄 Tải model từ: {model_path}")
-    model = SuperHybridModel(num_classes=num_classes, img_size=img_size).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
-    print("✅ Tải model thành công!")
-    
-    # Load ảnh
-    print(f"\n📷 Load ảnh từ: {image_path}")
-    if not os.path.exists(image_path):
-        print(f"❌ Lỗi: File ảnh {image_path} không tồn tại!")
-        return
-    
-    _, _, test_transform = get_transforms(img_size)
-    img = Image.open(image_path).convert('RGB')
-    img_tensor = test_transform(img).unsqueeze(0).to(device)
-    
-    # Predict
-    with torch.no_grad():
-        logits = model(img_tensor)
-        probs = torch.softmax(logits, dim=1)
-        pred_class = logits.argmax(dim=1).item()
-        confidence = probs.max().item()
-    
-    print(f"\n🎯 KẾT QUẢ DỰ ĐOÁN:")
-    print(f"   Lớp dự đoán: Class {pred_class}")
-    print(f"   Độ tin cậy: {confidence*100:.2f}%")
-    print(f"\n📊 Xác suất cho từng lớp:")
-    for i, prob in enumerate(probs[0].cpu().numpy()):
-        print(f"   Class {i}: {prob*100:.2f}%")
 
 
 if __name__ == "__main__":
     import sys
     
     # ==========================================
-    # CẤU HÌNH TEST
+    # CẤU HÌNH VALIDATION
     # ==========================================
     MODEL_PATH = "best_super_hybrid.pth"  # Hoặc "best_model.pth" nếu sử dụng Early Stopping
-    TEST_DIR = "dataset/test"
+    DATA_ROOT = "."  # Thư mục cha của 'dataset'
     BATCH_SIZE = 32
     IMG_SIZE = 224
-    NUM_CLASSES = 2  # Sửa lại nếu cần
     
-    # TEST 1: Kiểm tra trên toàn bộ tập test
+    # VALIDATION 1: Kiểm tra trên tập VAL
     print("\n" + "="*60)
-    print("TEST 1: KIỂM TRA TRÊN TOÀN BỘ TẬP TEST")
+    print("VALIDATION 1: KIỂM TRA TRÊN TẬP VAL")
     print("="*60)
-    results = test_model(MODEL_PATH, TEST_DIR, BATCH_SIZE, IMG_SIZE)
+    results_val = validate_model(MODEL_PATH, DATA_ROOT, BATCH_SIZE, IMG_SIZE, split_type="val")
     
-    # TEST 2: (Tùy chọn) Kiểm tra trên một ảnh đơn lẻ
-    # Bỏ comment để kiểm tra
-    # print("\n" + "="*60)
-    # print("TEST 2: KIỂM TRA TRÊN MỘT ẢNH ĐƠN LẺ")
-    # print("="*60)
-    # test_single_image(MODEL_PATH, "path/to/your/image.jpg", IMG_SIZE, NUM_CLASSES)
+    # VALIDATION 2: (Tùy chọn) Kiểm tra trên tập TRAIN để xem overfitting
+    print("\n" + "="*60)
+    print("VALIDATION 2: KIỂM TRA TRÊN TẬP TRAIN (Để xem Overfitting)")
+    print("="*60)
+    results_train = validate_model(MODEL_PATH, DATA_ROOT, BATCH_SIZE, IMG_SIZE, split_type="train")
+    
+    # So sánh kết quả
+    if results_val and results_train:
+        print("\n" + "="*60)
+        print("SO SÁNH KẾT QUẢ TRAIN vs VAL")
+        print("="*60)
+        print(f"\n{'Metric':<20} {'Train':<15} {'Val':<15} {'Diff':<15}")
+        print("─"*60)
+        print(f"{'Accuracy':<20} {results_train['accuracy']:.4f} {results_val['accuracy']:.4f} {results_train['accuracy']-results_val['accuracy']:.4f}")
+        print(f"{'Loss':<20} {results_train['loss']:.4f} {results_val['loss']:.4f} {results_train['loss']-results_val['loss']:.4f}")
+        print(f"{'F1-Macro':<20} {results_train['f1_macro']:.4f} {results_val['f1_macro']:.4f} {results_train['f1_macro']-results_val['f1_macro']:.4f}")
+        print(f"{'Precision':<20} {results_train['precision']:.4f} {results_val['precision']:.4f} {results_train['precision']-results_val['precision']:.4f}")
+        print(f"{'Recall':<20} {results_train['recall']:.4f} {results_val['recall']:.4f} {results_train['recall']-results_val['recall']:.4f}")

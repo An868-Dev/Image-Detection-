@@ -3,110 +3,89 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import os
 
-# Import từ các module của bạn
-from data.dataset import MedicalImageDataset, get_transforms
+# Import từ file data.py vừa tạo
+from data.dataset import MedicalImageDataset, get_transforms, load_records_kits
+
+# Import từ thư mục utils của bạn
 from utils.model import SuperHybridModel
 from utils.engine import MarginLoss, train_epoch, validate_epoch, save_learning_curves, EarlyStopping
+
 def main():
-    # ==========================================
-    # 1. CẤU HÌNH (HYPERPARAMETERS)
-    # ==========================================
+    # 1. CẤU HÌNH
     EPOCHS = 8
-    BATCH_SIZE = 32
-    LEARNING_RATE = 0.001
+    BATCH_SIZE = 16 
+    LEARNING_RATE = 3e-4 
     IMG_SIZE = 224
-    
-    # Đường dẫn thư mục (Dựa trên cấu trúc chuẩn của bạn)
-    DATA_ROOT = "dataset" # Sửa lại cho đúng thư mục chứa train/val/test
-    TRAIN_DIR = os.path.join(DATA_ROOT, "train")
-    VAL_DIR = os.path.join(DATA_ROOT, "val")
-    TEST_DIR = os.path.join(DATA_ROOT, "test")
+    DATA_ROOT = r"f:\Paper20tr\dataset" # Đường dẫn "vàng" của bạn
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 Bắt đầu huấn luyện trên thiết bị: {device}")
+    print(f"🚀 Thiết bị hiện tại: {device}")
     
-    # ==========================================
-    # 2. CHUẨN BỊ DỮ LIỆU
-    # ==========================================
-    train_transform, val_transform, test_transform = get_transforms(IMG_SIZE)
+    # 2. CHUẨN BỊ DATA
+    print("🔍 Đang quét và phân chia dữ liệu KiTS19...")
+    train_records = load_records_kits(DATA_ROOT, split_type="train")
+    val_records   = load_records_kits(DATA_ROOT, split_type="val")
     
-    train_dataset = MedicalImageDataset(TRAIN_DIR, transform=train_transform)
-    val_dataset = MedicalImageDataset(VAL_DIR, transform=val_transform)
-    test_dataset = MedicalImageDataset(TEST_DIR, transform=test_transform)
+    if not train_records:
+        print("❌ Lỗi: Không tìm thấy dữ liệu. Dừng chương trình.")
+        return
+        
+    train_trans, val_trans = get_transforms(IMG_SIZE)
     
-    NUM_CLASSES = len(train_dataset.classes)
-    print(f"📦 Số lượng classes tìm thấy: {NUM_CLASSES} -> {train_dataset.classes}")
+    train_ds = MedicalImageDataset(records=train_records, transform=train_trans)
+    val_ds   = MedicalImageDataset(records=val_records, transform=val_trans)
     
-    # Tối ưu num_workers (nếu chạy trên Windows máy cá nhân có thể để 0 hoặc 2)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+    val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
     
-    # ==========================================
-    # 3. KHỞI TẠO MÔ HÌNH & TỐI ƯU HÓA
-    # ==========================================
-    model = SuperHybridModel(num_classes=NUM_CLASSES, img_size=IMG_SIZE).to(device)
+    # KiTS19 label ác tính là 3 -> Cần 4 classes (0, 1, 2, 3)
+    NUM_CLASSES = 4 
+    
+    # 3. KHỞI TẠO MÔ HÌNH
+    model = SuperHybridModel(
+        backbone_type='densenet121', 
+        in_channels=3, 
+        num_classes=NUM_CLASSES, 
+        img_size=IMG_SIZE
+    ).to(device)
+    
     criterion = MarginLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    
-    # Công cụ hỗ trợ
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-3) 
     early_stopping = EarlyStopping(patience=5, min_delta=0.001)
+    
     history = {'t_loss': [], 'v_loss': [], 't_acc': [], 'v_acc': []}
     best_f1 = 0.0
     
-    # ==========================================
-    # 4. VÒNG LẶP HUẤN LUYỆN
-    # ==========================================
+    # 4. TRAINING LOOP
     for epoch in range(EPOCHS):
-        print(f"\n{'='*30}\nEpoch {epoch+1}/{EPOCHS}\n{'='*30}")
+        print(f"\n--- Epoch {epoch+1}/{EPOCHS} ---")
         
-        # Huấn luyện và Đánh giá
         t_loss, t_acc = train_epoch(model, train_loader, criterion, optimizer, device)
         v_metrics = validate_epoch(model, val_loader, criterion, device)
         
-        # Giải nén metrics
-        v_loss = v_metrics['loss']
-        v_acc = v_metrics['acc']
-        v_f1_macro = v_metrics['f1_macro']
+        v_loss, v_acc, v_f1_macro = v_metrics['loss'], v_metrics['acc'], v_metrics['f1_macro']
         
-        # Lưu lịch sử để vẽ biểu đồ
         history['t_loss'].append(t_loss)
         history['v_loss'].append(v_loss)
         history['t_acc'].append(t_acc)
         history['v_acc'].append(v_acc)
         
         print(f"📊 Train Loss: {t_loss:.4f} | Val Loss: {v_loss:.4f}")
-        print(f"🎯 Val Acc: {v_acc:.4f} | Val Macro-F1: {v_f1_macro:.4f} | Recall: {v_metrics['recall']:.4f}")
+        print(f"🎯 Val Acc: {v_acc:.4f} | F1: {v_f1_macro:.4f}")
         
-        # Vẽ biểu đồ trực tiếp sau mỗi epoch
         save_learning_curves(history['t_loss'], history['v_loss'], history['t_acc'], history['v_acc'])
         
-        # Lưu mô hình tốt nhất (dựa trên Macro-F1 vì y tế quan trọng chỉ số này)
         if v_f1_macro > best_f1:
             best_f1 = v_f1_macro
             torch.save(model.state_dict(), "best_super_hybrid.pth")
-            print("💾 >>> Đã lưu model tốt nhất mới!")
+            print("💾 >>> Saved Best Model!")
             
-        # Kiểm tra Early Stopping
         early_stopping(v_loss, model)
         if early_stopping.early_stop:
-            print("🛑 Early stopping được kích hoạt. Quá trình huấn luyện dừng lại để tránh Overfitting.")
+            print("🛑 Early stopping activated.")
             break
 
-    # ==========================================
-    # 5. ĐÁNH GIÁ CUỐI CÙNG TRÊN TẬP TEST
-    # ==========================================
-    print(f"\n{'*'*40}\nKIỂM THỬ TRÊN TẬP TEST ĐỘC LẬP\n{'*'*40}")
-    # Load lại weights tốt nhất
-    model.load_state_dict(torch.load("best_model.pth"))
-    
-    test_metrics = validate_epoch(model, test_loader, criterion, device)
-    print("\n[KẾT QUẢ FINAL - BÁO CÁO KHOA HỌC]")
-    print(f"Test Accuracy    : {test_metrics['acc']:.4f}")
-    print(f"Test Macro-F1    : {test_metrics['f1_macro']:.4f}")
-    print(f"Test Precision   : {test_metrics['precision']:.4f}")
-    print(f"Test Recall      : {test_metrics['recall']:.4f}")
-    print(f"Test Weighted-F1 : {test_metrics['f1_weighted']:.4f}")
+    print("\n✅ Huấn luyện hoàn tất!")
 
 if __name__ == "__main__":
     main()
